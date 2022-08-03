@@ -1,0 +1,945 @@
+---
+title: "IADS Summer School - Day 2"
+author: "Anna Hughes & Alasdair Clarke"
+date: "04/08/2022"
+output: 
+    beamer_presentation:
+        includes:
+            in_header: header.tex
+theme: "metropolis"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+library(tidyverse)
+```
+
+## Day 2 - the plan
+
+- Morning: Bayesian linear models - a recap and some practical experience
+- Afternoon: Going beyond linearity with Bayes
+
+# Getting set up to do Bayesian models
+
+## A quick reminder from yesterday
+
+**Bayesian statistics** assumes that probability expresses the degree of belief in an event, and this may be based at least partly on our prior knowledge about the event.
+
+This is different from **frequentist statistics** where probability is viewed as a limit of the relative frequency of an event after many trials.
+
+## Bayesian models in R
+
+We will be using the `brms` package to fit Bayesian models.
+
+Hopefully everyone was able to get their computer set up okay to install all the dependencies needed, but shout now if not!
+
+
+``` {r brms, echo = TRUE, message = FALSE}
+
+#install.packages("brms")
+library(brms)
+
+```
+
+# Bayesian linear models
+
+## Loading up some data
+
+This is data on the height, weight and age from census data for the Dobe area !Kung San (a foraging population which has been extensively studied by anthropologists).
+
+\tiny
+```{r Howell}
+
+height_data <- read_csv('data/height.csv') %>%
+  filter(age >= 18) # want to just use adults
+
+glimpse(height_data)
+
+```
+\normalsize
+
+## A (very) simple model
+
+We want to ask: what is the mean height in this population? 
+
+What should our model look like?
+
+We can define our heights as normally distributed, to give the likelihood*:
+
+$h_i \sim Normal(\mu, \sigma)$
+
+What about our priors? 
+
+\tiny
+\* The likelihood function is derived from a statistical model for the observed data - and the likelihood then tells us the compatability of the evidence with the given hypothesis.
+\normalsize
+
+## A (very) simple model
+
+We could set the prior for $\mu$ as follows:
+
+$\mu \sim Normal(178,20)$
+
+
+## Prior for $\mu$
+
+\tiny
+```{r mu_prior, fig.width = 2, fig.height = 2, fig.align = "center"}
+
+n <- 10000
+
+mu_prior <- tibble(
+  sample = rnorm(n, mean = 178, sd = 20)
+)
+
+ggplot(mu_prior, aes(sample)) + 
+  geom_histogram(bins = 10) 
+
+```
+\normalsize
+
+## A (very) simple model
+
+We can define our heights as normally distributed, to give the likelihood*:
+
+$h_i \sim Normal(\mu, \sigma)$
+
+What about our priors? We could set the prior for $\mu$ as follows:
+
+$\mu \sim Normal(178,20)$
+
+And for $\sigma$:
+
+$\sigma \sim Uniform(0,50)$
+
+\tiny
+\* The likelihood function is derived from a statistical model for the observed data - and the likelihood then tells us the compatability of the evidence with the given hypothesis.
+\normalsize
+
+## Prior for $\sigma$
+
+\tiny
+```{r sigma_prior, fig.width = 2, fig.height = 2, fig.align = "center"}
+
+sigma_prior <- tibble(
+  sample = runif(n, min = 0, max = 50)
+)
+
+ggplot(sigma_prior, aes(sample)) + 
+  geom_area(stat="bin", bins=30)
+
+```
+\normalsize
+
+## Prior for $\sigma$
+
+A uniform prior has some desirable properties e.g. only positive values.
+
+Unfortunately, it doesn't tend to work very well for `brms`: maybe because the hard cut off doesn't work well.
+
+We therefore suggest using a **half cauchy** prior instead.
+
+## The half cauchy distribution
+
+\tiny
+```{r cauchy, fig.width = 2, fig.height = 2, fig.align = "center"}
+
+cauchy_prior <- tibble(
+  sample = rcauchy(n, location = 0, scale = 1)
+)
+
+# Only uses the positive real values (this is why it's called half-cauchy)
+cauchy_prior <- filter(cauchy_prior, sample > 0)
+
+ggplot(cauchy_prior, aes(sample)) + 
+  geom_density() + xlim(0,50)
+
+```
+\normalsize
+
+## Exercise
+
+- Practice plotting these three distribution types - try changing the values of the arguments and check you understand what happens.
+
+## Plotting heights
+
+```{r height_plot, fig.width = 5, fig.height = 3.1}
+
+ggplot(height_data, aes(height)) + geom_histogram(bins=10)
+
+```
+
+## Fitting the model: Markov chain Monte Carlo
+
+To fit complex Bayesian models, we make use of **Markov chain Monte Carlo** (MCMC) techniques. 
+
+These don't try to compute the posterior distribution directly - they instead draw millions of samples from the posterior, giving us a collection of parameter values that correspond to the frequencies of the posterior plausibilities. You can think of the technique as building a picture of the posterior from a histogram of the samples.
+
+## Fitting the model: linear models in R
+
+```{r, echo = FALSE, fig.height=2, fig.width = 2, message=FALSE, fig.align="center"}
+
+tibble(x = rnorm(10, 0, 1), y = x + rnorm(10, 0, 0.25)) %>%
+    ggplot(aes(x, y)) + 
+    geom_point() + 
+    geom_smooth(method = "lm", se = F) + 
+    theme_minimal()
+```
+
+* Equation of a straight line: $y = mx + c$
+* Using `R`'s formula syntax, we write `y ~ x`
+* Here, we have only an intercept for now (i.e. $y = c$)
+* In `R`, we represent this with `y ~ 1` 
+
+## Fitting the model with `brm()`
+
+- **Model formula**: see how this matches with the previous slide
+- **Priors**: these are also defined in our call - both what the prior will be, and its class (intercept or sigma)
+- **Other arguments**: the sampling process is repeated over 4 *chains*, each that run for *2000* iterations, half of which are *warmup* (they don't get used in the analysis). *Cores* is the number of cores your computer will use (how hard it will work, basically) and *seed* acts like `set.seed`
+
+\tiny
+```{r model, cache=TRUE, message=FALSE, warning=FALSE}
+
+height_model <-
+  brm(data = height_data, family = gaussian,
+      height ~ 1,
+      prior = c(prior(normal(178,20), class = Intercept),
+                prior(cauchy(0,1), class = sigma)),
+      iter = 2000, warmup = 1000, chains = 4, cores = 4,
+      seed = 4)
+
+```
+\normalsize
+
+## Fitting the model with `brm()`
+
+It is often good practice to pre-define your prior in a variable - makes you think about what your priors will be in advance!
+
+\tiny
+```{r model_priorpredef, eval = FALSE}
+
+height_model_prior <- c(prior(normal(178,20), class = Intercept),
+                        prior(cauchy(0,1), class = sigma))
+
+height_model <-
+  brm(data = height_data, family = gaussian,
+      height ~ 1,
+      prior = height_model_prior,
+      iter = 2000, warmup = 1000, chains = 4, cores = 4,
+      seed = 4)
+
+```
+
+
+## Fitting the model with `brm()`
+
+If you are finding model fitting slow, you can often reduce the number of iterations (note that you generally want `warmup` to be around 50% of the total number of iterations).
+
+\tiny
+```{r model_iter, eval = FALSE}
+
+height_model <-
+  brm(data = height_data, family = gaussian,
+      height ~ 1,
+      prior = height_model_prior,
+      iter = 1000, warmup = 500, chains = 4, cores = 4,
+      seed = 4)
+
+
+```
+
+## Fitting the model with `brm()`
+
+\tiny
+```{r modelsummary}
+
+summary(height_model)
+
+```
+\normalsize
+
+## What are these CIs?
+
+Beware: CIs in the Bayesian context are **credible intervals**!
+
+The proportion of MCMC draws for that particular parameter between the lower and upper CI bounds is equal to the specified probability (95\% by default).
+
+## Summarising our model
+
+It doesn't make sense to use p values for for Bayesian models.
+
+So we can just summarise our models in words using the **estimates** and **credible intervals** e.g.
+
+*The estimate of mean height was 154.61cm (95% CI: 153.80-155.41cm). The estimate of the standard deviation around this mean height was 7.75cm (95% CI: 7.20-8.34cm)*
+
+You could even avoid the mean completely and just give the credible intervals! (Alasdair's preferred method).
+
+## Checking that the model has fit properly
+
+\tiny
+```{r model_fit, fig.width = 5, fig.height = 3, fig.align = "center"}
+
+plot(height_model)
+
+```
+\normalsize
+
+
+## What does a bad model fit look like?
+
+```{r model_fit_2, echo = FALSE, warning = FALSE, message = FALSE, cache = TRUE}
+
+height_model_bad <-
+  brm(data = height_data, family = gaussian,
+      height ~ 1,
+      prior = c(prior(normal(178,20), class = Intercept),
+                prior(uniform(0,50), class = sigma)),
+      iter = 2000, warmup = 1000, chains = 4, cores = 4,
+      seed = 4)
+
+plot(height_model_bad)
+
+```
+
+
+## Summary of some terms so far
+
+**Parameter values** are ways of indexing possible explanations of the data (e.g. possible heights).
+
+**A likelihood** is a mathematical formula that specifies the plausibility of the data.
+
+**A prior** is the initial plausibility assignment for each possible value of the parameter.
+
+**A posterior** is the relative plausibility of different parameter values, conditional on the data.
+
+**Credible intervals** tell us which parameter values lie at the bounds of a specified amount of posterior probability.
+
+## Adding a predictor
+
+Let's say we now want to ask if weight predicts height.
+
+How would we formulate this model?
+
+Can we be more specific about what we expect the effect to be?
+
+
+## Fitting the model
+
+$h_i \sim Normal(\mu_i, \sigma)$: **`family = gaussian`**
+
+$\mu_i = \alpha + \beta x_i$: **`height ~ 1 + weight`**
+
+$\alpha \sim Normal(100,20)$: **`prior(normal(100,20), class = intercept)`**
+
+$\beta \sim Normal(0,10)$: **`prior(normal(0,10), class = b)`**
+
+$\sigma \sim Cauchy(0,1)$: **`prior(cauchy(0,1), class = sigma)`**
+
+## Looking at the data
+
+\tiny
+```{r height_weight_graph, fig.width = 5, fig.height = 3}
+
+ggplot(height_data, aes(weight, height)) +
+  geom_point(shape = 1, size = 2) +
+  theme_bw()
+
+```
+\normalsize
+
+## Fitting the model
+
+\tiny
+```{r hw_model, message = FALSE, cache = TRUE}
+
+hw_model <-
+  brm(data = height_data, family = gaussian,
+      height ~ 1 + weight,
+      prior = c(prior(normal(100,20), class = Intercept),
+                prior(normal(0,10), class = b),
+                prior(cauchy(0,1), class = sigma)),
+      iter = 2000, warmup = 1000, chains = 4, cores = 4,
+      seed = 4)
+
+```
+
+## Checking that the model has fit properly
+
+\tiny
+```{r hw_model_fit, fig.width = 5, fig.height = 3, fig.align = "center"}
+
+plot(hw_model)
+
+```
+\normalsize
+
+## Summarising our model
+
+\tiny
+```{r hw_model_summary}
+
+summary(hw_model)
+
+```
+\normalsize
+
+## Plotting our model
+
+We're going to make use of some new packages to help us plot: `tidybayes` and `modelr`.
+
+
+```{r tidybayes, message = FALSE}
+
+library(tidybayes)
+library(modelr)
+
+```
+
+## Plotting posterior inference against the data
+
+First, we're going to use a function called **`data_grid`** to help us generate an evenly spaced grid of points from the data.
+
+\tiny
+```{r hw_model_data_grid}
+
+height_data_posterior <- height_data %>%
+  data_grid(weight = seq_range(weight, n = 51))
+
+head(height_data_posterior)
+
+```
+\normalsize
+
+## Plotting posterior inference against the data
+
+We can use **`add_epred_draws`** which allows us to add a draw from the posterior predictions of the model (expectation of the posterior predictive) to each row of our data grid. (I'm then summarising to give a mean for each of the weights).
+
+\tiny
+```{r hw_model_plot}
+
+height_data_posterior <- height_data %>%
+  data_grid(weight = seq_range(weight, n = 51)) %>%
+  add_epred_draws(hw_model) %>%
+  group_by(weight) %>%
+  summarise(mean_value = mean(.epred)) 
+
+head(height_data_posterior)
+
+```
+\normalsize
+
+## Plotting posterior inference against the data
+
+\tiny
+```{r hw_model_plot2, fig.width = 5, fig.height = 2.9}
+
+ggplot(height_data_posterior, aes(x = weight, y = height)) +
+  geom_line(aes(y = mean_value)) +
+  geom_point(data = height_data) +
+  scale_fill_brewer(palette = "Greys") +
+  scale_color_brewer(palette = "Set2")
+
+```
+\normalsize
+
+## Adding uncertainty around the mean
+
+Often we want to give an indication of uncertainty around the mean.
+
+One way of doing this is to specify a number of draws (e.g. 50 in this example) and then plot each separately - this will give us a 'spread' of lines.
+
+## Adding uncertainty around the mean
+
+\tiny
+```{r uncertainty, fig.width = 5, fig.height = 3}
+
+height_data %>%
+  modelr::data_grid(weight = seq_range(weight, n = 51)) %>%
+  add_epred_draws(hw_model, ndraws = 50) %>%
+  ggplot(aes(x = weight, y = height)) +
+  geom_line(aes(y = .epred, group = .draw), alpha = 0.05) +
+  geom_point(data = height_data) +
+  scale_color_brewer(palette = "Dark2")
+
+```
+\normalsize
+
+## Plotting regression intervals 
+
+Another way of showing uncertainty around the mean is to plot regression intervals. We can use the **`stat_lineribbon`** argument to do this very easily!
+
+\tiny
+```{r regression_intervals, eval = FALSE}
+
+height_data %>%
+  modelr::data_grid(weight = seq_range(weight, n = 51)) %>%
+  add_epred_draws(hw_model) %>%
+  ggplot(aes(x = weight, y = height)) +
+  stat_lineribbon(aes(y = .epred)) +
+  geom_point(data = height_data) +
+  scale_fill_brewer(palette = "Greys") +
+  scale_color_brewer(palette = "Set2")
+
+```
+\normalsize
+
+## Plotting regression intervals
+
+\tiny
+```{r regression_intervals_2, echo = FALSE}
+
+height_data %>%
+  modelr::data_grid(weight = seq_range(weight, n = 51)) %>%
+  add_epred_draws(hw_model) %>%
+  ggplot(aes(x = weight, y = height)) +
+  stat_lineribbon(aes(y = .epred)) +
+  geom_point(data = height_data) +
+  scale_fill_brewer(palette = "Greys") +
+  scale_color_brewer(palette = "Set2")
+
+```
+\normalsize
+
+## Prediction intervals
+
+Our full statistical model is:
+
+$h_i \sim Normal(\mu_i = \alpha + \beta x, \sigma)$
+
+Using **`add_epred_draws`** only plots the $\mu$ part i.e. we are looking at the mean and the variability we expect in the mean. If we want to include the variability expressed by $\sigma$ i.e. the variability we might expect on a trial-by-trial basis, we need to switch to using the **`add_predicted_draws`** function.
+
+
+## Prediction intervals 
+
+\tiny
+```{r prediction_intervals, fig.height = 4}
+
+height_data %>%
+  modelr::data_grid(weight = seq_range(weight, n = 51)) %>%
+  add_predicted_draws(hw_model) %>%
+  ggplot(aes(x = weight, y = height)) +
+  stat_lineribbon(aes(y = .prediction), .width = c(.95, .80, .50), alpha = 1/4) +
+  geom_point(data = height_data) +
+  scale_fill_brewer(palette = "Reds") +
+  scale_color_brewer(palette = "Reds") +
+  theme_bw()
+
+```
+\normalsize
+
+## Interim summary
+
+- In Bayesian modelling, we derive the **posterior probability** (distribution of parameter(s) after taking into account observed data) as a consequence of a **prior probability** and a **likelihood function** (derived from a statistical model for the observed data)
+- We can fit Bayesian models in R using `brms`
+- Trace plots should be used to check our models have fit correctly
+- We should aim to plot our posterior inferences, along with measures of uncertainty of these inferences such as regression or prediction intervals
+
+## Exercises
+
+Have a go at **Question 1** on the worksheet, which will check you've understood the principles we've discussed so far this morning.
+
+# Categorical data in Bayesian models
+
+## Categorical data
+
+```{r categorical_data}
+
+n <- 10
+categorical_data <-
+  tibble(
+    condition = rep(c("A","B","C","D","E"), n),
+    response = rnorm(n * 5, c(0,1,2,1,-1), 0.5)
+  )
+
+```
+
+
+## Categorical data - fitting a model
+
+\tiny
+```{r categorical_model, message=FALSE, warning=FALSE, cache = TRUE}
+
+categorical_model <- brm(
+  data = categorical_data,
+  response ~ condition,
+  prior = c(prior(normal(0,1), class = Intercept),
+            prior(normal(0,1), class = b),
+            prior(cauchy(0,1), class = sigma)),
+  iter = 2000, warmup = 1000, chains = 4, cores = 4,
+  seed = 4)
+
+
+```
+\normalsize
+
+## Looking at our model
+
+\tiny
+```{r categorical_model_summary}
+
+summary(categorical_model)
+
+```
+\normalsize
+
+## Specifying priors more finely
+
+Sometimes you might want to fit a prior on each level of the categorical variable individually. To see what your priors are, you can use the **`prior_summary`** function. 
+
+\tiny
+```{r get_variables}
+
+prior_summary(categorical_model)
+
+```
+\normalsize
+
+## Specifying priors more finely
+
+\tiny
+```{r categorical_model_2, eval = FALSE}
+
+categorical_model2 <- brm(
+  data = categorical_data,
+  response ~ condition,
+  prior = c(prior(normal(0,1), class = Intercept),
+            prior(normal(0,1), class = b),
+            prior(normal(2,1), class = b, coef = "conditionD"),
+            prior(cauchy(0,1), class = sigma)),
+  iter = 2000, warmup = 1000, chains = 4, cores = 4,
+  seed = 4)
+
+
+```
+\normalsize
+
+## Plotting your categorical results
+
+As before, you can plot the fitted results e.g. the likely distribution of the mean values for each category.
+
+\tiny
+```{r categorical_plot, fig.height = 4}
+
+categorical_data %>%
+  modelr::data_grid(condition) %>%
+  add_epred_draws(categorical_model) %>%
+  ggplot(aes(x = .epred, y = condition)) +
+  stat_slab()
+
+```
+\normalsize
+
+## Plotting your categorical results
+
+There are various options for displaying the distribution - you might prefer dots!
+
+\tiny
+```{r categorical_plot_2, fig.height = 4}
+
+categorical_data %>%
+  modelr::data_grid(condition) %>%
+  add_epred_draws(categorical_model) %>%
+  ggplot(aes(x = .epred, y = condition)) +
+  stat_dots(quantiles = 100)
+
+```
+\normalsize
+
+## Plotting your categorical results
+
+And you can also use predicted draws as well e.g. predicting the trial-by-trial variability rather than the variability in the mean.
+
+\tiny
+```{r categorical_plot_3, fig.height = 4}
+
+categorical_data %>%
+  modelr::data_grid(condition) %>%
+  add_predicted_draws(categorical_model) %>%
+  ggplot(aes(y = condition, x = .prediction)) +
+  stat_interval(.width = c(.50, .80, .95, .99)) +
+  geom_point(aes(x = response), data = categorical_data) +
+  scale_color_brewer()
+
+```
+\normalsize
+
+## Exercises
+
+Have a go at **Questions 2 and 3** on the worksheet to practice 
+
+# A more complex example
+
+## Questionnaire data
+
+To what extent do religious beliefs predict opinions about whether the government should fund stem cell research?
+
+- 1: definitely not fund
+- 2: probably not fund
+- 3: probably fund
+- 4: definitely fund
+
+This is an **ordinal variable**: we know that the categories have an order, but we don't know what the psychological distance is between them (and whether that's the same for all participants). We should account for this in our modelling!
+
+## Ordinal modelling: one approach
+
+We can assume our observed ordinal variable $Y$ originates from the categorisation of a latent continuous variable $\tilde{Y}$.
+
+Our model will assume there are $K$ thresholds that partition $\tilde{Y}$ into $K+1$ observable, ordered categories of $Y$.
+
+`brms` has glm functionality e.g. binomial, poisson. Here, we are using the `cumulative(probit)` family which corresponds to the situation above.
+
+## Modelling our prior
+
+It's sometimes difficult to work out how we should specify our priors, especially with new distributions. The **sample_prior** option allows us to just sample from the prior (no data is involved!) so we can tweak our prior distributions.
+
+\tiny
+```{r stemcell, message = FALSE, warning = FALSE, cache = TRUE}
+stemcell <- read_csv('data/stemcell.csv')
+
+# Do some relevelling and reordering of our data
+stemcell <- stemcell %>%
+  mutate(belief = fct_relevel(belief, "moderate", "liberal", "fundamentalist"),
+         rating = abs(rating - 5))
+
+# What should our priors be?
+stemcell_model_prior <- brm(
+  data = stemcell,
+  rating ~ 1 + belief,
+  family = cumulative("probit"),
+  prior = c(prior(normal(0,1), class = Intercept),
+            prior(normal(0,1), class = b)),
+  sample_prior = "only",
+  refresh = 0
+)
+
+```
+
+## Plotting our prior
+
+\tiny
+```{r stemcell_prior_plot, fig.height = 3.5}
+
+stemcell %>%
+  data_grid(belief) %>%
+  add_epred_draws(stemcell_model_prior) %>%
+  ggplot(aes(x = .category, y = .epred, color = belief)) +
+  stat_pointinterval(.width = c(.5, .99), position = position_dodge(width = .4)) +
+  scale_color_brewer(palette = "Accent") +
+  xlab('Score') +
+  ylab('Probability') + 
+  theme_bw()
+
+```
+
+## Can we improve our prior?
+
+Perhaps we have some prior information about how different religious beliefs might affect our opinions of stem cell research funding.
+
+\tiny
+```{r stemcell_prior_2, message = FALSE, warning = FALSE, cache = TRUE, results = "hide"}
+
+stemcell_model_prior2 <- brm(
+  data = stemcell,
+  rating ~ 1 + belief,
+  family = cumulative("probit"),
+  prior = c(prior(normal(0,1), class = Intercept),
+            prior(normal(0.5, 1), class = b, coef = "beliefliberal"),
+            prior(normal(-0.5, 1), class = b, coef = "belieffundamentalist")),
+  sample_prior = "only"
+)
+
+```
+
+## Can we improve our prior?
+
+\tiny
+```{r stemcell_prior_2_plot, fig.height = 3.5}
+
+stemcell %>%
+  data_grid(belief) %>%
+  add_epred_draws(stemcell_model_prior2) %>%
+  ggplot(aes(x = .category, y = .epred, color = belief)) +
+  stat_pointinterval(.width = c(.5, .99), position = position_dodge(width = .4)) +
+  scale_color_brewer(palette = "Accent") +
+  xlab('Score') +
+  ylab('Probability') + 
+  theme_bw()
+
+```
+
+## Fitting our model with the real data
+
+\tiny
+```{r stemcell_real, message = FALSE, warning = FALSE, cache = TRUE, results = "hide"}
+
+stemcell_model<- brm(
+  data = stemcell,
+  rating ~ 1 + belief,
+  prior = c(prior(normal(0,1), class = Intercept),
+            prior(normal(0.5, 1), class = b, coef = "beliefliberal"),
+            prior(normal(-0.5, 1), class = b, coef = "belieffundamentalist")),
+  family = cumulative("probit")
+)
+
+```
+
+## A summary of our model
+
+\tiny
+```{r stemcell_summary}
+
+summary(stemcell_model)
+
+```
+
+## Our fitted data - plotting
+
+\tiny
+```{r stemcell_plot, fig.height = 3.5}
+
+stemcell %>%
+  data_grid(belief) %>%
+  add_epred_draws(stemcell_model) %>%
+  ggplot(aes(x = .category, y = .epred, color = belief)) +
+  stat_pointinterval(.width = c(.5, .99), position = position_dodge(width = .4)) +
+  scale_color_brewer(palette = "Accent") +
+  xlab('Score') +
+  ylab('Probability') + 
+  theme_bw()
+
+  
+```
+
+## Plotting our predicted data 
+
+\tiny
+```{r stemcell_predicted}
+
+predicted_data <- stemcell %>%
+  modelr::data_grid(belief) %>%
+  add_predicted_draws(stemcell_model, ndraws = 270) %>%
+  group_by(belief, .prediction) %>%
+  summarise(count = n()) %>%
+  ggplot(aes(x = belief, y = count, fill = .prediction)) +
+  geom_bar(position="stack", stat="identity") +
+  coord_flip() +
+  scale_fill_brewer(palette="PRGn") +
+  labs(fill = "Predicted value") +
+  ggtitle("Predicted")
+
+real_data <- stemcell %>%
+  group_by(belief, rating) %>%
+  summarise(count = n()) %>%
+  ggplot(aes(x = belief, y = count, fill = as.factor(rating))) +
+  geom_bar(position="stack", stat="identity") +
+  coord_flip() +
+  scale_fill_brewer(palette="PRGn") +
+  labs(fill = "Real value") +
+  ggtitle("Real data")
+
+```
+
+## Putting everything together!
+
+\tiny
+```{r stemcell_together}
+
+library(patchwork)
+predicted_data + real_data
+
+```
+
+# A little bit on model comparison
+
+## Model comparison philosophy
+
+We may have several putative models that we want to be able to compare (competing hypotheses to explain our data).
+
+Our question therefore becomes : which model is the most accurate? Which model should we use to draw conclusions?
+
+## Model comparison philosophy
+
+* Traditionally, we might use a measure such as $R^2$: the model with the highest $R^2$ should have the best absolute fit to the data
+* But this model doesn't necessarily perform the best on new data!
+* Ideally, we want to select the model that makes the best **predictions** for data that hasn't been observed
+
+
+## Model comparison philosophy
+
+* We don't often have spare data lying around
+* Instead, we can use **cross validation techniques** in order to obtain an approximation of a model's predictive abilities - two commonly used options are **Bayesian leave-one-out cross validation** (LOO-CV) and the **Watanabe Akaike Information Criterion** (WAIC)
+* Broadly, these two options are asymptomatically equivalent
+
+## Implementing model comparison with `brms`
+
+Remembering our height-weight data from this morning: perhaps we have a hypothesis that age predicts height (remember we've restricted our data to adults only).
+
+\tiny
+```{r hwa_model, cache = TRUE}
+
+hwa_model <-
+  brm(data = height_data, family = gaussian,
+      height ~ 1 + weight + age,
+      prior = c(prior(normal(100,20), class = Intercept),
+                prior(normal(0,10), class = b),
+                prior(cauchy(0,1), class = sigma)),
+      iter = 2000, warmup = 1000, chains = 4, cores = 4,
+      seed = 4)
+
+```
+
+## Implementing model comparison with `brms`
+
+First, we need to make sure our model fit criteria are included in our models. Here, we will use WAIC.
+
+\tiny
+```{r model_comparison}
+
+height_model <- add_criterion(height_model, "waic")
+hw_model <- add_criterion(hw_model, "waic")
+hwa_model <- add_criterion(hwa_model, "waic")
+
+
+```
+
+## Implementing model comparison with `brms`
+
+**ELPD** is the expected log predictive density: the top model in the output is always the 'best' model, and the rows below show how big the difference is between the other models and this best model.
+
+\tiny
+```{r model_comparison2}
+
+loo_compare(height_model, hw_model, hwa_model, criterion = "waic")
+
+```
+
+## Interpreting `elpd_diff`
+
+* If `elpd_diff` is less than 4, the difference is small
+* If it is larger than 4, compare that difference to the standard error of `elpd_diff`: the difference should really be 4-5x bigger than the standard error difference to conclude that the models really are meaningfully different
+* In our example, we can see that including weight in our model is a big improvement on not having any predictors, but there's not really any good evidence that adding age changes much either way
+
+# Summary and wrap up
+
+## Summary
+ * The Bayesian framework can be extended to include non-linear models and multilevel models (and both at the same time!)
+ * If you're familiar with `lme4`, `brms` uses the same multilevel model syntax.
+ * With more complex models, we can evaluate the posterior in a wider variety of ways - we need to think carefully about what questions we are trying to ask. 
+ 
+## Problems?
+
+- There's currently a bug lingering around somewhere in the `Rstan` ecosystem that causes the dreaded 'R bomb': you haven't done anything wrong, this is a known current issue! Just restart your R (you shouldn't lose any of your work) 
+- If your models are failing to converge properly, consider whether you need to adjust your priors, or if more model iterations might help
+
+## Further reading
+\small
+- **https://xcelab.net/rm/statistical-rethinking/** - the website for the Statistical Rethinking book, which is a great intro to Bayesian analysis if you're interested in learning more about this topic.
+- **https://github.com/rmcelreath/statrethinking_winter2019** - lecture slides and videos for the whole book.
+- **https://bookdown.org/ajkurz/Statistical_Rethinking_recoded/** - the original Statistical Rethinking book uses slightly different code compared to what we've learned today. This website provides code translations into `brms` and the tidyverse.
+- **https://avehtari.github.io/modelselection/CV-FAQ.html** - lots of model selection advice.
+
+## Exercises
+
+Have a go at **Question 4** in the workbook to get some practice with a more complex dataset.
+
+We are also here to help if you have any questions relating to your own data/models!
